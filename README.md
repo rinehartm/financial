@@ -1,70 +1,74 @@
-# Financial transaction integration (all linked bank accounts)
+# Personal Financial Data Sync
 
-This project gives you a ready-to-run integration for pulling transaction data from all your connected bank accounts using **Plaid**.
+A low-friction personal finance ingestion service for continuously pulling transaction data from connected financial accounts into Postgres.
 
-## What "all bank accounts" means in practice
+This project is intentionally small and boring:
 
-No public API can directly pull data from every bank with just your username/password in a safe way.
-The standard approach is to use an aggregator (like Plaid), connect each institution through a consent flow, then pull transactions from each connected **Item**.
+- FastAPI backend
+- Plaid Link for account connection
+- Plaid `/transactions/sync` for incremental updates
+- Postgres for durable storage
+- Raw + normalized transaction tables
+- Cron-friendly sync command
 
-This integration handles that pull step.
+## Why this shape
 
-## Features
+The key design choice is storing both raw and cleaned data. Raw transaction JSON is the source of truth; cleaned/normalized rows are disposable derived state. That makes it possible to fix bugs, improve categorization, or change schemas without reconnecting accounts.
 
-- Create a Plaid Link token for bank-connection UI.
-- Exchange `public_token` for long-lived `access_token`.
-- Pull transactions incrementally using `/transactions/sync` with pagination.
-- Emit a JSON payload with `added`, `modified`, `removed`, and `next_cursor`.
+## Plaid flow
 
-## Setup
+1. Backend creates a Link token.
+2. Browser opens Plaid Link.
+3. Plaid returns a public token.
+4. Backend exchanges the public token for an access token and item ID.
+5. Backend stores the item and later calls `/transactions/sync` using the saved cursor.
 
-1. Create a Plaid account and get credentials.
-2. Set environment variables:
-
-```bash
-export PLAID_CLIENT_ID="your_client_id"
-export PLAID_SECRET="your_secret"
-export PLAID_ENV="sandbox"   # or development / production
-```
-
-3. Install dependencies:
+## Local setup
 
 ```bash
+cp .env.example .env
+docker compose up -d db
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+alembic upgrade head
+uvicorn app.main:app --reload
 ```
 
-## Usage
+Open `http://localhost:8000`.
 
-### 1) Pull transactions for one linked item
+## Environment variables
+
+See `.env.example`.
+
+For first development, use Plaid Sandbox credentials. Sandbox is free and test-only. Production requires Plaid approval.
+
+## Useful commands
 
 ```bash
-python bank_transactions_integration.py --access-token "access-sandbox-..."
+# Run one sync pass for all connected Plaid items
+python -m app.sync
+
+# Start API server
+uvicorn app.main:app --reload
 ```
 
-### 2) Incremental sync (recommended)
+## Production notes
 
-Store the returned `next_cursor` and pass it next run:
+For personal use, the simplest continuous deployment is:
 
-```bash
-python bank_transactions_integration.py \
-  --access-token "access-sandbox-..." \
-  --cursor "previous_cursor"
-```
+- Host API on Render/Railway/Fly.io
+- Use managed Postgres
+- Run `python -m app.sync` every 6-24 hours via cron/scheduled job
+- Add HTTPS before using real Plaid Link credentials
 
-## Integrating into your app
+## Non-goals
 
-You can import `PlaidTransactionsClient` and call:
+- No credential scraping
+- No trading
+- No financial advice
+- No multi-user auth beyond a single configured personal user ID
 
-- `create_link_token(user_id)`
-- `exchange_public_token(public_token)`
-- `sync_transactions(access_token, cursor=None)`
+## Safety warning
 
-In production, store each user's tokens and cursors securely (encrypted at rest), and never expose secrets client-side.
-
-## Notes
-
-- You must run your own frontend for Plaid Link to collect `public_token`.
-- To pull from *all* your accounts, users must connect each institution they use.
-- If you prefer a different aggregator (MX, Finicity, Teller), I can adapt this integration.
+Plaid access tokens are sensitive. Do not commit `.env`, database dumps, or logs containing tokens.
